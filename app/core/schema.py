@@ -95,7 +95,7 @@ class NotificationRecord(BaseModel):
     notification_type: NotificationType
     user_id: str
     template_code: str
-    variables: UserData
+    variables: Dict[str, Any]
     request_id: str
     priority: int = 5
     metadata: Optional[Dict[str, Any]] = {}

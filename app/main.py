@@ -273,31 +273,35 @@ async def enqueue_notification(payload: dict):
     Test endpoint: Push raw message to push.queue
     Use in Postman to trigger Push Service without API Gateway
     """
-    if not app.state.channel:
-            raise HTTPException(status_code=503, detail="RabbitMQ not connected")
-        
-    request_id = payload.get("request_id") or f"manual-{uuid4().hex[:8]}"
-    payload["request_id"] = request_id
+    try:
+        if not app.state.channel:
+                raise HTTPException(status_code=503, detail="RabbitMQ not connected")
+            
+        request_id = payload.get("request_id") or f"manual-{uuid4().hex[:8]}"
+        payload["request_id"] = request_id
 
-    # Publish to RabbitMQ
-    exchange = app.state.channel.default_exchange
-    logger.info("Enqueuing message", exchange=exchange.name, routing_key=settings.PUSH_QUEUE_NAME)
-    message = aio_pika.Message(
-        body=json.dumps(payload).encode(),
-        content_type="application/json",
-        message_id=request_id,
-        headers={"source": "enqueue_endpoint"}
-    )
-    await exchange.publish(
-        message,
-        routing_key=settings.PUSH_QUEUE_NAME
-    )
-    logger.info("Message enqueued successfully", request_id=request_id)
-    return api_response(
-        success=True,
-        data={"request_id": request_id, "queue": settings.PUSH_QUEUE_NAME},
-        message="Notification enqueued. Will be processed by Push Service."
-    )
+        # Publish to RabbitMQ
+        exchange = app.state.channel.default_exchange
+        logger.info("Enqueuing message", exchange=exchange.name, routing_key=settings.PUSH_QUEUE_NAME)
+        message = aio_pika.Message(
+            body=json.dumps(payload).encode(),
+            content_type="application/json",
+            message_id=request_id,
+            headers={"source": "enqueue_endpoint"}
+        )
+        await exchange.publish(
+            message,
+            routing_key=settings.PUSH_QUEUE_NAME
+        )
+        logger.info("Message enqueued successfully", request_id=request_id)
+        return api_response(
+            success=True,
+            data={"request_id": request_id, "queue": settings.PUSH_QUEUE_NAME},
+            message="Notification enqueued. Will be processed by Push Service."
+        )
+    except Exception as e:
+        logger.exception("Failed to enqueue message", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
@@ -311,5 +315,6 @@ async def send_push_notification(token: DeviceToken, payload: PushNotification):
         logger.error(f"Error sending push: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8003, reload=False)
