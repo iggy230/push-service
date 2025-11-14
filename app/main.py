@@ -1,6 +1,7 @@
 import asyncio
 import json
 import aio_pika
+from dotenv import load_dotenv
 from redis.asyncio import Redis
 import structlog
 import httpx
@@ -11,9 +12,11 @@ from pybreaker import CircuitBreakerError, CircuitBreaker
 from firebase_admin import messaging, credentials, initialize_app, auth, app_check
 from jinja2 import Environment
 from uuid import uuid4
-from .core.config import settings, logger, api_response
+from .core.config import settings, logger, api_response, fcm_config
 from .core.schema import DeviceType, PushNotification, PushMessage, DeviceToken, TemplateData, TemplateResponse, UserData
 
+
+load_dotenv()
 
 
 
@@ -27,7 +30,8 @@ template_breaker = CircuitBreaker(fail_max=3, reset_timeout=30)
 jinja_env = Environment(autoescape=True)
 
 # Initialize Firebase
-cred = credentials.Certificate(settings.FCM_CREDENTIALS_PATH)
+# cred = credentials.Certificate(settings.FCM_CREDENTIALS_PATH)
+cred = credentials.Certificate(fcm_config)
 initialize_app(cred)
 
 
@@ -50,8 +54,10 @@ async def add_correlation_id(request: Request, call_next):
 
 async def is_duplicate_request(request_id: str) -> bool:
     """Check if the request with given ID is a duplicate."""
+    print("Checking duplicate for request_id:", request_id)
     key = f"idempotency:push:{request_id}"
     exists = await app.state.redis.set(key, "1", nx=True, ex=24*60*60)
+    print("Duplicate check result:", exists)
     return exists is None
 
 

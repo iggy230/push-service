@@ -13,3 +13,7 @@ config.txt
 
 venv/
 
+.env
+
+
+hngpushservice-firebase-adminsdk-fbsvc-33c9715e8f.json

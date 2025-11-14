@@ -1,8 +1,9 @@
 import os
 import structlog
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
 
-
+load_dotenv()
 # Global clients
 redis = None  # to be initialized in main.py
 rabbit_connection = None
@@ -18,17 +19,32 @@ structlog.configure(
     )
 logger = structlog.get_logger()
 
+print(os.getenv("RABBITMQ_URL"))
 
 
 class Settings(BaseSettings):
-    RABBITMQ_URL: str = os.getenv("RABBITMQ_HOST")
-    REDIS_URL: str = os.getenv("REDIS_HOST")
-    FCM_CREDENTIALS_PATH: str = os.getenv("FIREBASE_CREDENTIALS")
-    TEMPLATE_SERVICE_URL: str = os.getenv("TEMPLATE_SERVICE_URL")
+    RABBITMQ_URL: str = os.getenv("RABBITMQ_URL")
+    REDIS_URL: str = os.getenv("REDIS_URL")
+    FCM_CREDENTIALS_PATH: str = os.getenv("FCM_CREDENTIALS_JSON_PATH")
     PUSH_QUEUE_NAME: str = os.getenv("PUSH_QUEUE_NAME", "push.queue")
 
 
 settings = Settings()
+
+fcm_config = {
+  "type": "service_account",
+  "project_id": "hngpushservice",
+  "private_key_id": os.getenv("FCM_PRIVATE_KEY_ID"),
+  "private_key": os.getenv("FCM_PRIVATE_KEY").replace('\\n', '\n'),
+  "client_email": "firebase-adminsdk-fbsvc@hngpushservice.iam.gserviceaccount.com",
+  "client_id": "102838088537792723570",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40hngpushservice.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
+
 
 
 def api_response(success: bool, data=None, error: str = None, message: str = "", meta=None):
