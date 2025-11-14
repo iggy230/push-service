@@ -99,3 +99,9 @@ class NotificationRecord(BaseModel):
     request_id: str
     priority: int = 5
     metadata: Optional[Dict[str, Any]] = {}
+
+
+class NoticationStatus(str, Enum):
+    delivered = "delivered"
+    pending = "pending"
+    failed = "failed"
