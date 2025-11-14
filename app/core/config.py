@@ -25,7 +25,7 @@ print(os.getenv("RABBITMQ_URL"))
 class Settings(BaseSettings):
     RABBITMQ_URL: str = os.getenv("RABBITMQ_URL")
     REDIS_URL: str = os.getenv("REDIS_URL")
-    FCM_CREDENTIALS_PATH: str = os.getenv("FCM_CREDENTIALS_JSON_PATH")
+    # FCM_CREDENTIALS_PATH: str = os.getenv("FCM_CREDENTIALS_JSON_PATH")
     PUSH_QUEUE_NAME: str = os.getenv("PUSH_QUEUE_NAME", "push.queue")
 
 
