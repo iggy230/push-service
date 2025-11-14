@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     REDIS_HOST: str = os.getenv("REDIS_HOST")
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD")
     REDIS_PORT: int = int(os.getenv("REDIS_PORT", 6379))
+    API_GATEWAY_API_KEY: str = os.getenv("API_GATEWAY_API_KEY")
+    API_GATEWAY_BASE_URL: str = os.getenv("API_GATEWAY_BASE_URL")
+
 
 
 settings = Settings()
