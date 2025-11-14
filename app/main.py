@@ -13,7 +13,7 @@ from firebase_admin import messaging, credentials, initialize_app, auth, app_che
 from jinja2 import Environment
 from uuid import uuid4
 from .core.config import settings, logger, api_response, fcm_config
-from .core.schema import DeviceType, PushNotification, PushMessage, DeviceToken, TemplateData, TemplateResponse, UserData
+from .core.schema import DeviceType, PushNotification, PushMessage, DeviceToken, TemplateData, TemplateResponse, UserData, NoticationStatus
 
 
 load_dotenv()
@@ -157,6 +157,75 @@ async def get_rendered_template(template_data: TemplateData, variables: Dict) ->
             )
 
 
+async def update_notification_status(
+    notification_id: str,
+    new_status: NoticationStatus,
+    error_message: str = "",
+    metadata: Dict[str, Any] = None
+):
+    """
+    Update notification status in API Gateway.
+    
+    Args:
+        notification_id: UUID of the notification
+        new_status: Must be one of: 'processing', 'delivered', 'failed'
+        error_message: Optional error message for failed status
+        metadata: Optional additional metadata
+    """
+    if not settings.API_GATEWAY_API_KEY:
+        logger.warning("API_GATEWAY_API_KEY not configured, skipping status update")
+        return
+    
+    try:
+        url = f"{settings.API_GATEWAY_BASE_URL}/push/status"
+        headers = {
+            "X-API-Key": settings.API_GATEWAY_API_KEY,
+            "Content-Type": "application/json"
+        }
+        params = {"notification_id": notification_id}
+        payload = {
+            "new_status": new_status,
+            "error_message": error_message,
+            "changed_by": "push-service",
+            "metadata": metadata or {}
+        }
+        
+        logger.info(
+            "Updating notification status",
+            notification_id=notification_id,
+            new_status=new_status,
+            url=url
+        )
+        
+        response = await app.state.httpx_client.post(
+            url,
+            params=params,
+            headers=headers,
+            json=payload,
+            timeout=10.0
+        )
+        
+        if response.status_code == 200:
+            logger.info(
+                "Status updated successfully",
+                notification_id=notification_id,
+                new_status=new_status
+            )
+        else:
+            logger.error(
+                "Failed to update status",
+                notification_id=notification_id,
+                status_code=response.status_code,
+                response=response.text
+            )
+    except Exception as e:
+        logger.exception(
+            "Error updating notification status",
+            notification_id=notification_id,
+            error=str(e)
+        )
+
+
 async def process_push_message(message: aio_pika.IncomingMessage):
     """Process incoming push notification message."""
     logger.info("Received push message", message_id=message.message_id)
@@ -186,14 +255,13 @@ async def process_push_message(message: aio_pika.IncomingMessage):
             return
 
         # Extract
-        user_id = payload["user_id"]
-        device_token = payload["device_token"]
+        user_data = payload["user_data"]
+        device_token = user_data.get("device_token")
         template_data = payload["template_data"]
         variables = payload.get("variables", {})
-        extra_data = payload.get("metadata", {})
 
         if not device_token or not template_data:
-            logger.error("Missing required fields")
+            logger.error("Missing required fields", device_token=device_token, template_data=template_data)
             await message.nack(requeue=False)
             return
 
@@ -202,10 +270,12 @@ async def process_push_message(message: aio_pika.IncomingMessage):
             token=device_token['token'],
             device_type = device_token.get('type', 'web')
         )
+        logger.info("Device token verified", device_details=device_token)
         # Fetch & render template
         rendered = await get_rendered_template(template_data, variables)
         print("Rendered template:", rendered)
         # Send FCM
+        logger.info("Rendered template", rendered=rendered)
         try:
             fcm_response = await send_fcm_message(
                 device_token,
@@ -213,16 +283,53 @@ async def process_push_message(message: aio_pika.IncomingMessage):
             )
             logger.info("Push delivered", fcm_response=fcm_response)
             await app.state.redis.setex(f"notification_status:{request_id}", 3600, "delivered")
-
+            await update_notification_status(
+                notification_id=notification_id,
+                new_status=NoticationStatus.delivered,
+                metadata={
+                    "device_token": device_token.token[:20] + "...",
+                    "provider": "fcm",
+                    "fcm_response": fcm_response
+                }
+            )
+        
         except messaging.UnregisteredError:
             logger.warning("Token unregistered", token=device_token)
+            await update_notification_status(
+                notification_id=notification_id,
+                new_status=NoticationStatus.failed,
+                error_message="Invalid registration token: Token is unregistered",
+                metadata={
+                    "error_type": "UnregisteredError",
+                    "provider": "fcm"
+                }
+            )  
             await app.state.redis.setex(f"notification_status:{request_id}", 3600, "failed:unregistered")
         except CircuitBreakerError:
             logger.error("FCM circuit open")
+            await update_notification_status(
+                notification_id=notification_id,
+                new_status=NoticationStatus.failed,
+                error_message="Service temporarily unavailable: Circuit breaker open",
+                metadata={
+                    "error_type": "CircuitBreakerError",
+                    "will_retry": True
+                }
+            )
             await message.nack(requeue=True)
             return
         except Exception as e:
             logger.exception("FCM send failed", error=str(e))
+            if await update_notification_status(
+                notification_id=notification_id,
+                new_status=NoticationStatus.failed,
+                error_message=f"FCM send failed: {str(e)}",
+                metadata={
+                    "error_type": type(e).__name__,
+                    "will_retry": True
+                }
+            ):
+                logger.info("Notification status updated", notification_id=notification_id, new_status=NoticationStatus.failed)
             await message.nack(requeue=True)
             return
 
@@ -234,24 +341,24 @@ async def process_push_message(message: aio_pika.IncomingMessage):
 
 
 async def consume_push_queue():
-    try:
-        connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
-        app.state.httpx_client = httpx.AsyncClient()
+    # try:
+    connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+    app.state.httpx_client = httpx.AsyncClient()
 
-        app.state.channel = await connection.channel()
-        await app.state.channel.set_qos(prefetch_count=10)
+    app.state.channel = await connection.channel()
+    await app.state.channel.set_qos(prefetch_count=10)
 
-        exchange = await app.state.channel.declare_exchange("notifications.direct",  durable=True)
-        # queue = await app.state.channel.declare_queue(settings.PUSH_QUEUE_NAME, durable=True)
-        # await queue.bind(exchange, routing_key=settings.PUSH_QUEUE_NAME)
-        queue = await app.state.channel.get_queue(settings.PUSH_QUEUE_NAME)
-        await queue.bind(exchange, routing_key='notification.push')
-        
-        await queue.consume(process_push_message)
-        logger.info("Push Service consuming messages", queue=settings.PUSH_QUEUE_NAME)
-        await asyncio.Future()  # Keep consumer running indefinitely
-    except Exception as e:
-        logger.error("Consumer crashed", exc_info=e)
+    exchange = await app.state.channel.declare_exchange("notifications.direct",  durable=True)
+    # queue = await app.state.channel.declare_queue(settings.PUSH_QUEUE_NAME, durable=True)
+    # await queue.bind(exchange, routing_key=settings.PUSH_QUEUE_NAME)
+    queue = await app.state.channel.get_queue(settings.PUSH_QUEUE_NAME)
+    await queue.bind(exchange, routing_key='notification.push')
+    
+    await queue.consume(process_push_message)
+    logger.info("Push Service consuming messages", queue=settings.PUSH_QUEUE_NAME)
+    await asyncio.Future()  # Keep consumer running indefinitely
+    # except Exception as e:
+    #     logger.error("Consumer crashed", exc_info=e)
 
 
 
